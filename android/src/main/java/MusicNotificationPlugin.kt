@@ -9,6 +9,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.os.SystemClock
 import android.util.Log
 import android.webkit.WebView
 import app.tauri.annotation.Command
@@ -22,10 +23,6 @@ import com.plugin.music_notification.core.NormalizationConfig
 import com.plugin.music_notification.core.PrefsSessionStore
 import com.plugin.music_notification.core.QueueSongInfo
 import org.json.JSONArray
-import java.util.concurrent.Callable
-import java.util.concurrent.CountDownLatch
-import java.util.concurrent.FutureTask
-import java.util.concurrent.TimeUnit
 
 @InvokeArg
 class PingArgs {
@@ -114,11 +111,12 @@ class SetHeadsetMediaButtonDisabledArgs {
 /**
  * Bridges webview invokes to [MusicPlayerService] over a bound connection.
  *
- * Commands execute synchronously on the service's main thread and resolve
- * with the real outcome (validation failures report success=false), instead
- * of the historical fire-and-forget intents that always reported
- * success=true. Playback outcomes continue to stream through the
- * `playback:event` snapshot channel.
+ * Tauri delivers commands on the Android main thread, so nothing here may
+ * block: [exec] posts every command to the main thread, retries briefly
+ * while the service connection is still coming up, and resolves the invoke
+ * asynchronously from the completion callback with the real outcome
+ * (validation failures report success=false). Playback outcomes continue to
+ * stream through the `playback:event` snapshot channel.
  */
 @TauriPlugin
 class MusicNotificationPlugin(private val activity: Activity): Plugin(activity) {
@@ -127,8 +125,8 @@ class MusicNotificationPlugin(private val activity: Activity): Plugin(activity) 
         private const val TAG = "MusicNotificationPlugin"
         private const val PREFS_NAME = "music_notification"
         private const val PREF_SERVER_LIB_NAME = "server_lib_name"
-        private const val BIND_TIMEOUT_MS = 3_000L
-        private const val COMMAND_TIMEOUT_MS = 5_000L
+        private const val CONNECT_TIMEOUT_MS = 3_000L
+        private const val RETRY_INTERVAL_MS = 100L
 
         fun getServerLibName(context: Context): String? {
             val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -138,15 +136,13 @@ class MusicNotificationPlugin(private val activity: Activity): Plugin(activity) 
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private var serviceConnection: ServiceConnection? = null
-    private var pendingLatch: CountDownLatch? = null
+    private var bindFailed = false
 
     @Volatile
     private var boundService: MusicPlayerService? = null
 
     override fun load(webView: WebView) {
         super.load(webView)
-        // load() runs on the main thread and connection callbacks are
-        // delivered there too — kick the bind off without waiting.
         startBinding()
     }
 
@@ -165,21 +161,16 @@ class MusicNotificationPlugin(private val activity: Activity): Plugin(activity) 
 
     // ------------------------------------------------------------- binding
 
-    /**
-     * Starts the bound connection if needed and returns the latch to await
-     * for the connection, or null when already connected (or binding
-     * failed). Never blocks.
-     */
+    /** Starts the bound connection if needed. Never blocks. Main thread only. */
     @Synchronized
-    private fun startBinding(): CountDownLatch? {
-        boundService?.let { return null }
-        serviceConnection?.let { return pendingLatch }
+    private fun startBinding() {
+        if (serviceConnection != null || boundService != null || bindFailed) {
+            return
+        }
 
-        val latch = CountDownLatch(1)
         val connection = object : ServiceConnection {
             override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
                 boundService = (service as MusicPlayerService.MusicPlayerBinder).service
-                latch.countDown()
             }
 
             override fun onServiceDisconnected(name: ComponentName?) {
@@ -194,54 +185,55 @@ class MusicNotificationPlugin(private val activity: Activity): Plugin(activity) 
             Log.e(TAG, "bindService failed", e)
             false
         }
-        if (!bound) {
-            return null
-        }
-        serviceConnection = connection
-        pendingLatch = latch
-        return latch
-    }
-
-    private fun ensureBound(): MusicPlayerService? {
-        boundService?.let { return it }
-        val latch = startBinding() ?: return boundService
-        return try {
-            if (latch.await(BIND_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
-                boundService
-            } else {
-                Log.e(TAG, "Timed out waiting for MusicPlayerService connection")
-                null
-            }
-        } catch (e: InterruptedException) {
-            Thread.currentThread().interrupt()
-            null
+        if (bound) {
+            serviceConnection = connection
+        } else {
+            bindFailed = true
         }
     }
 
     /**
-     * Runs [block] against the bound service on its main thread and waits for
-     * the real result. [ensureStarted] also promotes the service to a started
-     * foreground service for playback commands.
+     * Executes [block] against the bound service on the main thread and hands
+     * the result to [done], which resolves the invoke. While the connection
+     * is still coming up, retries briefly; after [CONNECT_TIMEOUT_MS] the
+     * [unavailable] fallback runs instead.
      */
-    private fun <T> withService(
+    private fun <T> exec(
         ensureStarted: Boolean = false,
-        fallback: () -> T,
-        block: (MusicPlayerService) -> T
-    ): T {
-        val service = ensureBound()
-        if (service == null) {
-            return fallback()
-        }
-        if (ensureStarted) {
-            promoteToForegroundService()
-        }
-        val future = FutureTask(Callable { block(service) })
-        mainHandler.post(future)
-        return try {
-            future.get(COMMAND_TIMEOUT_MS, TimeUnit.MILLISECONDS)
-        } catch (e: Exception) {
-            Log.e(TAG, "Service command timed out or failed", e)
-            fallback()
+        unavailable: () -> T,
+        block: (MusicPlayerService) -> T,
+        done: (T) -> Unit
+    ) {
+        val enqueuedAt = SystemClock.uptimeMillis()
+        mainHandler.post { dispatch(ensureStarted, unavailable, block, done, enqueuedAt) }
+    }
+
+    private fun <T> dispatch(
+        ensureStarted: Boolean,
+        unavailable: () -> T,
+        block: (MusicPlayerService) -> T,
+        done: (T) -> Unit,
+        enqueuedAt: Long
+    ) {
+        val service = boundService
+        when {
+            service != null -> {
+                if (ensureStarted) {
+                    promoteToForegroundService()
+                }
+                done(block(service))
+            }
+            SystemClock.uptimeMillis() - enqueuedAt > CONNECT_TIMEOUT_MS -> {
+                Log.e(TAG, "MusicPlayerService connection unavailable; using fallback")
+                done(unavailable())
+            }
+            else -> {
+                startBinding()
+                mainHandler.postDelayed(
+                    { dispatch(ensureStarted, unavailable, block, done, enqueuedAt) },
+                    RETRY_INTERVAL_MS
+                )
+            }
         }
     }
 
@@ -287,94 +279,124 @@ class MusicNotificationPlugin(private val activity: Activity): Plugin(activity) 
             return
         }
 
-        val result = withService(ensureStarted = true, fallback = { null }) { service ->
-            service.commandPlay(args.url, args.title, args.artist, args.album, args.coverUrl)
-        }
-
-        val ret = JSObject()
-        if (result == null) {
-            unavailableResult(ret)
-        } else {
-            ret.put("success", result.success)
-            result.message?.let { ret.put("message", it) }
-        }
-        invoke.resolve(ret)
+        exec(
+            ensureStarted = true,
+            unavailable = { null },
+            block = { service ->
+                service.commandPlay(args.url, args.title, args.artist, args.album, args.coverUrl)
+            },
+            done = { result -> invoke.resolve(resultRet(result)) }
+        )
     }
 
     @Command
     fun pause(invoke: Invoke) {
-        val result = withService(fallback = { null }) { it.commandPause() }
-        invoke.resolve(resultRet(result))
+        exec(
+            unavailable = { null },
+            block = { it.commandPause() },
+            done = { result -> invoke.resolve(resultRet(result)) }
+        )
     }
 
     @Command
     fun pauseAfter(invoke: Invoke) {
         val args = invoke.parseArgs(PauseAfterArgs::class.java)
-        val result = withService(fallback = { null }) { it.commandPauseAfter(args.delayMs) }
-        invoke.resolve(resultRet(result))
+        exec(
+            unavailable = { null },
+            block = { it.commandPauseAfter(args.delayMs) },
+            done = { result -> invoke.resolve(resultRet(result)) }
+        )
     }
 
     @Command
     fun resume(invoke: Invoke) {
-        val result = withService(ensureStarted = true, fallback = { null }) { it.commandResume() }
-        invoke.resolve(resultRet(result))
+        exec(
+            ensureStarted = true,
+            unavailable = { null },
+            block = { it.commandResume() },
+            done = { result -> invoke.resolve(resultRet(result)) }
+        )
     }
 
     @Command
     fun stop(invoke: Invoke) {
-        val result = withService(fallback = { null }) { it.commandStop() }
-        invoke.resolve(resultRet(result))
+        exec(
+            unavailable = { null },
+            block = { it.commandStop() },
+            done = { result -> invoke.resolve(resultRet(result)) }
+        )
     }
 
     @Command
     fun next(invoke: Invoke) {
-        val result = withService(ensureStarted = true, fallback = { null }) { it.commandNext() }
-        invoke.resolve(resultRet(result))
+        exec(
+            ensureStarted = true,
+            unavailable = { null },
+            block = { it.commandNext() },
+            done = { result -> invoke.resolve(resultRet(result)) }
+        )
     }
 
     @Command
     fun previous(invoke: Invoke) {
-        val result = withService(ensureStarted = true, fallback = { null }) { it.commandPrevious() }
-        invoke.resolve(resultRet(result))
+        exec(
+            ensureStarted = true,
+            unavailable = { null },
+            block = { it.commandPrevious() },
+            done = { result -> invoke.resolve(resultRet(result)) }
+        )
     }
 
     @Command
     fun seek(invoke: Invoke) {
         val args = invoke.parseArgs(SeekArgs::class.java)
-        val result = withService(fallback = { null }) { it.commandSeek(args.position, args.autoPlay) }
-        invoke.resolve(resultRet(result))
+        exec(
+            unavailable = { null },
+            block = { it.commandSeek(args.position, args.autoPlay) },
+            done = { result -> invoke.resolve(resultRet(result)) }
+        )
     }
 
     @Command
     fun playTrackAtIndex(invoke: Invoke) {
         val args = invoke.parseArgs(PlayTrackAtIndexArgs::class.java)
-        val result = withService(ensureStarted = true, fallback = { null }) { service ->
-            service.commandPlayTrackAtIndex(args.index, args.autoPlay, args.startAtMs)
-        }
-        invoke.resolve(resultRet(result))
+        exec(
+            ensureStarted = true,
+            unavailable = { null },
+            block = { service ->
+                service.commandPlayTrackAtIndex(args.index, args.autoPlay, args.startAtMs)
+            },
+            done = { result -> invoke.resolve(resultRet(result)) }
+        )
     }
 
     @Command
     fun seekAndPlay(invoke: Invoke) {
         val args = invoke.parseArgs(SeekArgs::class.java)
-        val result = withService(ensureStarted = true, fallback = { null }) { it.commandSeekAndPlay(args.position) }
-        invoke.resolve(resultRet(result))
+        exec(
+            ensureStarted = true,
+            unavailable = { null },
+            block = { it.commandSeekAndPlay(args.position) },
+            done = { result -> invoke.resolve(resultRet(result)) }
+        )
     }
 
     @Command
     fun getState(invoke: Invoke) {
-        val snapshot = withService(fallback = { null }) { service ->
-            Pair(service.coreRuntime(), service.nativeStatus())
-        } ?: run {
-            val persisted = PrefsSessionStore(activity).load()
-            Pair(persisted.runtime, if (persisted.runtime.isPlaying) "playing" else "idle")
-        }
-
-        val ret = JSObject()
-        ret.put("isPlaying", snapshot.first.isPlaying)
-        ret.put("position", snapshot.first.positionMs)
-        ret.put("duration", snapshot.first.durationMs)
-        invoke.resolve(ret)
+        exec(
+            unavailable = {
+                val persisted = PrefsSessionStore(activity).load()
+                Pair(persisted.runtime, if (persisted.runtime.isPlaying) "playing" else "idle")
+            },
+            block = { service -> Pair(service.coreRuntime(), service.nativeStatus()) },
+            done = { snapshot ->
+                val ret = JSObject()
+                ret.put("isPlaying", snapshot.first.isPlaying)
+                ret.put("position", snapshot.first.positionMs)
+                ret.put("duration", snapshot.first.durationMs)
+                invoke.resolve(ret)
+            }
+        )
     }
 
     @Command
@@ -405,91 +427,95 @@ class MusicNotificationPlugin(private val activity: Activity): Plugin(activity) 
         }
         val playMode = args.playMode ?: "sequential"
 
-        val result = withService(fallback = { null }) { service ->
-            service.commandSetQueue(songs, args.queue.currentIndex, playMode)
-        }
-
-        if (result == null) {
-            // Service not reachable: persist the queue so it is waiting when
-            // the service next starts.
-            PrefsSessionStore(activity).save(
-                com.plugin.music_notification.core.SessionSnapshot(
-                    queue = com.plugin.music_notification.core.PlayingQueueSnapshot(
-                        songs, args.queue.currentIndex
-                    ),
-                    runtime = com.plugin.music_notification.core.PlaybackRuntimeSnapshot(false, 0L, 0L),
-                    playMode = playMode,
-                    currentSongId = songs.getOrNull(args.queue.currentIndex ?: 0)?.id
+        exec(
+            unavailable = {
+                // Service not reachable: persist the queue so it is waiting
+                // when the service next starts.
+                PrefsSessionStore(activity).save(
+                    com.plugin.music_notification.core.SessionSnapshot(
+                        queue = com.plugin.music_notification.core.PlayingQueueSnapshot(
+                            songs, args.queue.currentIndex
+                        ),
+                        runtime = com.plugin.music_notification.core.PlaybackRuntimeSnapshot(false, 0L, 0L),
+                        playMode = playMode,
+                        currentSongId = songs.getOrNull(args.queue.currentIndex ?: 0)?.id
+                    )
                 )
-            )
-        }
-
-        val ret = JSObject()
-        ret.put("success", result?.success ?: true)
-        result?.message?.let { ret.put("message", it) }
-        invoke.resolve(ret)
+                successResult()
+            },
+            block = { service -> service.commandSetQueue(songs, args.queue.currentIndex, playMode) },
+            done = { result -> invoke.resolve(resultRet(result)) }
+        )
     }
 
     @Command
     fun getPlaybackSession(invoke: Invoke) {
-        val serviceSnapshot = withService(fallback = { null }) { service ->
-            Pair(service.getSession(), service.nativeStatus())
-        }
+        exec(
+            unavailable = { null },
+            block = { service -> Pair(service.getSession(), service.nativeStatus()) },
+            done = { serviceSnapshot ->
+                val snapshot = serviceSnapshot?.first ?: PrefsSessionStore(activity).load()
+                val status = serviceSnapshot?.second
+                    ?: if (snapshot.runtime.isPlaying) "playing" else "idle"
 
-        val snapshot = serviceSnapshot?.first ?: PrefsSessionStore(activity).load()
-        val status = serviceSnapshot?.second
-            ?: if (snapshot.runtime.isPlaying) "playing" else "idle"
+                val ret = JSObject()
+                val queue = JSObject()
+                val songs = JSONArray()
+                snapshot.queue.songs.forEach { song ->
+                    val songObj = JSObject()
+                    songObj.put("id", song.id)
+                    songObj.put("name", song.name)
+                    songObj.put("deviceId", song.deviceId)
+                    songObj.put("sourceKind", song.sourceKind)
+                    songObj.put("localUri", song.localUri)
+                    songObj.put("tempSongUrl", song.tempSongUrl)
+                    songObj.put("lufs", song.lufs)
+                    songObj.put("coverUrl", song.coverUrl)
+                    songs.put(songObj)
+                }
+                queue.put("songs", songs)
+                queue.put("currentIndex", snapshot.queue.currentIndex)
 
-        val ret = JSObject()
-        val queue = JSObject()
-        val songs = JSONArray()
-        snapshot.queue.songs.forEach { song ->
-            val songObj = JSObject()
-            songObj.put("id", song.id)
-            songObj.put("name", song.name)
-            songObj.put("deviceId", song.deviceId)
-            songObj.put("sourceKind", song.sourceKind)
-            songObj.put("localUri", song.localUri)
-            songObj.put("tempSongUrl", song.tempSongUrl)
-            songObj.put("lufs", song.lufs)
-            songObj.put("coverUrl", song.coverUrl)
-            songs.put(songObj)
-        }
-        queue.put("songs", songs)
-        queue.put("currentIndex", snapshot.queue.currentIndex)
+                val runtime = JSObject()
+                runtime.put("isPlaying", snapshot.runtime.isPlaying)
+                runtime.put("positionMs", snapshot.runtime.positionMs)
+                runtime.put("durationMs", snapshot.runtime.durationMs)
+                runtime.put("status", status)
 
-        val runtime = JSObject()
-        runtime.put("isPlaying", snapshot.runtime.isPlaying)
-        runtime.put("positionMs", snapshot.runtime.positionMs)
-        runtime.put("durationMs", snapshot.runtime.durationMs)
-        runtime.put("status", status)
-
-        ret.put("queue", queue)
-        ret.put("runtime", runtime)
-        ret.put("playMode", snapshot.playMode)
-        ret.put("currentSongId", snapshot.currentSongId)
-        invoke.resolve(ret)
+                ret.put("queue", queue)
+                ret.put("runtime", runtime)
+                ret.put("playMode", snapshot.playMode)
+                ret.put("currentSongId", snapshot.currentSongId)
+                invoke.resolve(ret)
+            }
+        )
     }
 
     @Command
     fun clearPlayingQueue(invoke: Invoke) {
-        val result = withService(fallback = { null }) { it.commandClearQueue() }
-        if (result == null) {
-            PrefsSessionStore(activity).save(JsonSessionCodec.emptySessionSnapshot())
-        }
-        invoke.resolve(resultRet(result ?: successResult()))
+        exec(
+            unavailable = {
+                PrefsSessionStore(activity).save(JsonSessionCodec.emptySessionSnapshot())
+                successResult()
+            },
+            block = { it.commandClearQueue() },
+            done = { result -> invoke.resolve(resultRet(result)) }
+        )
     }
 
     @Command
     fun setPlayMode(invoke: Invoke) {
         val args = invoke.parseArgs(SetPlayModeArgs::class.java)
         val playMode = args.playMode ?: "sequential"
-        val result = withService(fallback = { null }) { it.commandSetPlayMode(playMode) }
-        if (result == null) {
-            val store = PrefsSessionStore(activity)
-            store.save(store.load().copy(playMode = playMode))
-        }
-        invoke.resolve(resultRet(result ?: successResult()))
+        exec(
+            unavailable = {
+                val store = PrefsSessionStore(activity)
+                store.save(store.load().copy(playMode = playMode))
+                successResult()
+            },
+            block = { it.commandSetPlayMode(playMode) },
+            done = { result -> invoke.resolve(resultRet(result)) }
+        )
     }
 
     @Command
@@ -526,8 +552,11 @@ class MusicNotificationPlugin(private val activity: Activity): Plugin(activity) 
     @Command
     fun setVolume(invoke: Invoke) {
         val args = invoke.parseArgs(SetVolumeArgs::class.java)
-        val result = withService(fallback = { null }) { it.commandSetVolume(args.volume) }
-        invoke.resolve(resultRet(result))
+        exec(
+            unavailable = { null },
+            block = { it.commandSetVolume(args.volume) },
+            done = { result -> invoke.resolve(resultRet(result)) }
+        )
     }
 
     @Command
@@ -539,8 +568,11 @@ class MusicNotificationPlugin(private val activity: Activity): Plugin(activity) 
             fixedLufs = args.fixedLufs,
             lufsPrecacheCount = args.lufsPrecacheCount
         )
-        val result = withService(fallback = { null }) { it.commandSetNormalizationConfig(config) }
-        invoke.resolve(resultRet(result))
+        exec(
+            unavailable = { null },
+            block = { it.commandSetNormalizationConfig(config) },
+            done = { result -> invoke.resolve(resultRet(result)) }
+        )
     }
 
     @Command
@@ -569,14 +601,17 @@ class MusicNotificationPlugin(private val activity: Activity): Plugin(activity) 
     @Command
     fun setHeadsetMediaButtonDisabled(invoke: Invoke) {
         val args = invoke.parseArgs(SetHeadsetMediaButtonDisabledArgs::class.java)
-        val result = withService(fallback = { null }) { service ->
-            service.commandSetHeadsetMediaButtonDisabled(args.disabled)
-            true
-        }
-        if (result == null) {
-            MusicPlayerService.setHeadsetMediaButtonDisabled(activity, args.disabled)
-        }
-        invoke.resolve(resultRet(successResult()))
+        exec(
+            unavailable = {
+                MusicPlayerService.setHeadsetMediaButtonDisabled(activity, args.disabled)
+                successResult()
+            },
+            block = { service ->
+                service.commandSetHeadsetMediaButtonDisabled(args.disabled)
+                successResult()
+            },
+            done = { result -> invoke.resolve(resultRet(result)) }
+        )
     }
 
     // -------------------------------------------------------------- helpers
