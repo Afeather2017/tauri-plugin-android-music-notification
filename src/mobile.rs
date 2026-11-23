@@ -33,54 +33,71 @@ pub fn init<R: Runtime, C: DeserializeOwned>(
 /// Access to the music-notification APIs.
 pub struct MusicNotification<R: Runtime>(PluginHandle<R>, MusicNotificationState);
 
+// Command forwarding to the Kotlin plugin. One macro per call shape; the
+// command list mirrors `build.rs`.
+macro_rules! forward {
+    // No request payload, `EmptyResponse` result.
+    ($fn_name:ident, $method:literal) => {
+        pub fn $fn_name(&self) -> crate::Result<EmptyResponse> {
+            self.0
+                .run_mobile_plugin($method, EmptyRequest {})
+                .map_err(Into::into)
+        }
+    };
+    // No request payload, custom response type.
+    ($fn_name:ident, $method:literal -> $response:ty) => {
+        pub fn $fn_name(&self) -> crate::Result<$response> {
+            self.0
+                .run_mobile_plugin($method, EmptyRequest {})
+                .map_err(Into::into)
+        }
+    };
+    // Typed request payload, `EmptyResponse` result.
+    ($fn_name:ident, $method:literal, $request:ty) => {
+        pub fn $fn_name(&self, payload: $request) -> crate::Result<EmptyResponse> {
+            self.0
+                .run_mobile_plugin($method, payload)
+                .map_err(Into::into)
+        }
+    };
+    // Typed request payload, custom response type.
+    ($fn_name:ident, $method:literal, $request:ty -> $response:ty) => {
+        pub fn $fn_name(&self, payload: $request) -> crate::Result<$response> {
+            self.0
+                .run_mobile_plugin($method, payload)
+                .map_err(Into::into)
+        }
+    };
+}
+
 impl<R: Runtime> MusicNotification<R> {
-    pub fn ping(&self, payload: PingRequest) -> crate::Result<PingResponse> {
-        self.0
-            .run_mobile_plugin("ping", payload)
-            .map_err(Into::into)
-    }
-
-    pub fn play(&self, payload: PlayRequest) -> crate::Result<PlayResponse> {
-        self.0
-            .run_mobile_plugin("play", payload)
-            .map_err(Into::into)
-    }
-
-    pub fn pause(&self) -> crate::Result<EmptyResponse> {
-        self.0
-            .run_mobile_plugin("pause", EmptyRequest {})
-            .map_err(Into::into)
-    }
-
-    pub fn pause_after(&self, payload: PauseAfterRequest) -> crate::Result<EmptyResponse> {
-        self.0
-            .run_mobile_plugin("pauseAfter", payload)
-            .map_err(Into::into)
-    }
-
-    pub fn resume(&self) -> crate::Result<EmptyResponse> {
-        self.0
-            .run_mobile_plugin("resume", EmptyRequest {})
-            .map_err(Into::into)
-    }
-
-    pub fn stop(&self) -> crate::Result<EmptyResponse> {
-        self.0
-            .run_mobile_plugin("stop", EmptyRequest {})
-            .map_err(Into::into)
-    }
-
-    pub fn next(&self) -> crate::Result<EmptyResponse> {
-        self.0
-            .run_mobile_plugin("next", EmptyRequest {})
-            .map_err(Into::into)
-    }
-
-    pub fn previous(&self) -> crate::Result<EmptyResponse> {
-        self.0
-            .run_mobile_plugin("previous", EmptyRequest {})
-            .map_err(Into::into)
-    }
+    forward!(ping, "ping", PingRequest -> PingResponse);
+    forward!(play, "play", PlayRequest -> PlayResponse);
+    forward!(pause, "pause");
+    forward!(pause_after, "pauseAfter", PauseAfterRequest);
+    forward!(resume, "resume");
+    forward!(stop, "stop");
+    forward!(next, "next");
+    forward!(previous, "previous");
+    forward!(
+        play_track_at_index,
+        "playTrackAtIndex",
+        PlayTrackAtIndexRequest
+    );
+    forward!(get_state, "getState" -> PlaybackState);
+    forward!(set_playing_queue, "setPlayingQueue", SetPlayingQueueRequest -> QueueMutationResponse);
+    forward!(get_playback_session, "getPlaybackSession" -> PlaybackSession);
+    forward!(clear_playing_queue, "clearPlayingQueue" -> QueueMutationResponse);
+    forward!(set_play_mode, "setPlayMode", SetPlayModeRequest -> QueueMutationResponse);
+    forward!(start_service, "startService");
+    forward!(stop_service, "stopService");
+    forward!(set_volume, "setVolume", SetVolumeRequest -> SetVolumeResponse);
+    forward!(set_normalization_config, "setNormalizationConfig", SetNormalizationConfigRequest -> SetNormalizationConfigResponse);
+    forward!(
+        set_headset_media_button_disabled,
+        "setHeadsetMediaButtonDisabled",
+        SetHeadsetMediaButtonDisabledRequest
+    );
 
     pub fn seek(&self, position: i64, auto_play: bool) -> crate::Result<EmptyResponse> {
         #[derive(serde::Serialize)]
@@ -100,15 +117,6 @@ impl<R: Runtime> MusicNotification<R> {
             .map_err(Into::into)
     }
 
-    pub fn play_track_at_index(
-        &self,
-        payload: PlayTrackAtIndexRequest,
-    ) -> crate::Result<EmptyResponse> {
-        self.0
-            .run_mobile_plugin("playTrackAtIndex", payload)
-            .map_err(Into::into)
-    }
-
     pub fn seek_and_play(&self, position: i64) -> crate::Result<EmptyResponse> {
         #[derive(serde::Serialize)]
         struct SeekAndPlayRequest {
@@ -119,81 +127,9 @@ impl<R: Runtime> MusicNotification<R> {
             .map_err(Into::into)
     }
 
-    pub fn get_state(&self) -> crate::Result<PlaybackState> {
-        self.0
-            .run_mobile_plugin("getState", EmptyRequest {})
-            .map_err(Into::into)
-    }
-
-    pub fn set_playing_queue(
-        &self,
-        payload: SetPlayingQueueRequest,
-    ) -> crate::Result<QueueMutationResponse> {
-        self.0
-            .run_mobile_plugin("setPlayingQueue", payload)
-            .map_err(Into::into)
-    }
-
-    pub fn get_playback_session(&self) -> crate::Result<PlaybackSession> {
-        self.0
-            .run_mobile_plugin("getPlaybackSession", EmptyRequest {})
-            .map_err(Into::into)
-    }
-
-    pub fn clear_playing_queue(&self) -> crate::Result<QueueMutationResponse> {
-        self.0
-            .run_mobile_plugin("clearPlayingQueue", EmptyRequest {})
-            .map_err(Into::into)
-    }
-
-    pub fn set_play_mode(
-        &self,
-        payload: SetPlayModeRequest,
-    ) -> crate::Result<QueueMutationResponse> {
-        self.0
-            .run_mobile_plugin("setPlayMode", payload)
-            .map_err(Into::into)
-    }
-
-    pub fn start_service(&self) -> crate::Result<EmptyResponse> {
-        self.0
-            .run_mobile_plugin("startService", EmptyRequest {})
-            .map_err(Into::into)
-    }
-
-    pub fn stop_service(&self) -> crate::Result<EmptyResponse> {
-        self.0
-            .run_mobile_plugin("stopService", EmptyRequest {})
-            .map_err(Into::into)
-    }
-
-    pub fn set_volume(&self, payload: SetVolumeRequest) -> crate::Result<SetVolumeResponse> {
-        self.0
-            .run_mobile_plugin("setVolume", payload)
-            .map_err(Into::into)
-    }
-
-    pub fn set_normalization_config(
-        &self,
-        payload: SetNormalizationConfigRequest,
-    ) -> crate::Result<SetNormalizationConfigResponse> {
-        self.0
-            .run_mobile_plugin("setNormalizationConfig", payload)
-            .map_err(Into::into)
-    }
-
     pub fn set_server(&self, library_name: String) -> crate::Result<SetServerResponse> {
         self.0
             .run_mobile_plugin("setServer", SetServerRequest { library_name })
-            .map_err(Into::into)
-    }
-
-    pub fn set_headset_media_button_disabled(
-        &self,
-        payload: SetHeadsetMediaButtonDisabledRequest,
-    ) -> crate::Result<EmptyResponse> {
-        self.0
-            .run_mobile_plugin("setHeadsetMediaButtonDisabled", payload)
             .map_err(Into::into)
     }
 }
