@@ -61,7 +61,7 @@ macro_rules! forward {
         }
     };
     // Typed request payload, custom response type.
-    ($fn_name:ident, $method:literal, $request:ty -> $response:ty) => {
+    ($fn_name:ident, $method:literal, $request:ty, $response:ty) => {
         pub fn $fn_name(&self, payload: $request) -> crate::Result<$response> {
             self.0
                 .run_mobile_plugin($method, payload)
@@ -71,8 +71,8 @@ macro_rules! forward {
 }
 
 impl<R: Runtime> MusicNotification<R> {
-    forward!(ping, "ping", PingRequest -> PingResponse);
-    forward!(play, "play", PlayRequest -> PlayResponse);
+    forward!(ping, "ping", PingRequest, PingResponse);
+    forward!(play, "play", PlayRequest, PlayResponse);
     forward!(pause, "pause");
     forward!(pause_after, "pauseAfter", PauseAfterRequest);
     forward!(resume, "resume");
@@ -85,14 +85,29 @@ impl<R: Runtime> MusicNotification<R> {
         PlayTrackAtIndexRequest
     );
     forward!(get_state, "getState" -> PlaybackState);
-    forward!(set_playing_queue, "setPlayingQueue", SetPlayingQueueRequest -> QueueMutationResponse);
+    forward!(
+        set_playing_queue,
+        "setPlayingQueue",
+        SetPlayingQueueRequest,
+        QueueMutationResponse
+    );
     forward!(get_playback_session, "getPlaybackSession" -> PlaybackSession);
     forward!(clear_playing_queue, "clearPlayingQueue" -> QueueMutationResponse);
-    forward!(set_play_mode, "setPlayMode", SetPlayModeRequest -> QueueMutationResponse);
+    forward!(
+        set_play_mode,
+        "setPlayMode",
+        SetPlayModeRequest,
+        QueueMutationResponse
+    );
     forward!(start_service, "startService");
     forward!(stop_service, "stopService");
-    forward!(set_volume, "setVolume", SetVolumeRequest -> SetVolumeResponse);
-    forward!(set_normalization_config, "setNormalizationConfig", SetNormalizationConfigRequest -> SetNormalizationConfigResponse);
+    forward!(set_volume, "setVolume", SetVolumeRequest, SetVolumeResponse);
+    forward!(
+        set_normalization_config,
+        "setNormalizationConfig",
+        SetNormalizationConfigRequest,
+        SetNormalizationConfigResponse
+    );
     forward!(
         set_headset_media_button_disabled,
         "setHeadsetMediaButtonDisabled",
