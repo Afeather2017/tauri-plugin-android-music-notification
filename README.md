@@ -37,7 +37,7 @@ Add the plugin to your `src-tauri/Cargo.toml`:
 
 ```toml
 [dependencies]
-tauri-plugin-music-notification-api = { path = "../../../path/to/plugin" }
+tauri-plugin-android-music-notification = { path = "../../../path/to/plugin" }
 ```
 
 ## Setup
@@ -51,7 +51,7 @@ Register the plugin in your Tauri app (`src-tauri/src/lib.rs`):
 pub fn run() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![...])
-        .plugin(tauri_plugin_music_notification_api::init())
+        .plugin(tauri_plugin_android_music_notification::init())
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
@@ -67,7 +67,7 @@ In your `src-tauri/src/lib.rs`, implement the `Server` trait:
 
 ```rust
 use std::sync::Arc;
-use tauri_plugin_music_notification_api::Server;
+use tauri_plugin_android_music_notification::Server;
 
 struct HttpServer;
 
@@ -104,11 +104,11 @@ Register your server implementation before installing the plugin:
 pub fn run() {
     // Register the server before installing the plugin so Android can
     // auto-register the correct native library name for the foreground service.
-    tauri_plugin_music_notification_api::set_server(Arc::new(HttpServer));
+    tauri_plugin_android_music_notification::set_server(Arc::new(HttpServer));
 
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![...])
-        .plugin(tauri_plugin_music_notification_api::init())
+        .plugin(tauri_plugin_android_music_notification::init())
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
@@ -400,7 +400,7 @@ This means the plugin permissions aren't configured correctly:
 
 1. Make sure you're using `music-notification:default` in capabilities (NOT individual permissions)
 2. Do NOT copy the `permissions/` folder to your app
-3. Make sure `tauri-plugin-music-notification-api` is in your `Cargo.toml`
+3. Make sure `tauri-plugin-android-music-notification` is in your `Cargo.toml`
 
 ### HTTP URLs not working (MediaPlayer errors)
 
