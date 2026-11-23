@@ -30,6 +30,11 @@ android {
     kotlinOptions {
         jvmTarget = "1.8"
     }
+    testOptions {
+        // android.util.Log and friends return defaults in JVM unit tests
+        // instead of throwing "not mocked".
+        unitTests.isReturnDefaultValues = true
+    }
 }
 
 dependencies {
@@ -39,6 +44,8 @@ dependencies {
     implementation("com.google.android.material:material:1.7.0")
     implementation("androidx.media:media:1.6.0")
     testImplementation("junit:junit:4.13.2")
+    // Real org.json on the JVM test classpath (the android.jar stubs throw).
+    testImplementation("org.json:json:20240303")
     androidTestImplementation("androidx.test.ext:junit:1.1.5")
     androidTestImplementation("androidx.test.espresso:espresso-core:3.5.1")
     implementation(project(":tauri-android"))
