@@ -19,7 +19,32 @@ pub fn init<R: Runtime, C: DeserializeOwned>(
 }
 
 /// Access to the music-notification APIs.
+///
+/// Playback is Android-only; every command resolves to an explicit
+/// "unavailable" response so callers can distinguish it from success.
 pub struct MusicNotification<R: Runtime>(AppHandle<R>, MusicNotificationState);
+
+fn unavailable<T: DeserializeOwned>(message: &str) -> T {
+    serde_json::from_value(serde_json::json!({ "success": false, "message": message }))
+        .expect("static desktop stub payload deserializes")
+}
+
+macro_rules! stub {
+    // No request payload.
+    ($fn_name:ident, $response:ty, $msg:expr) => {
+        pub fn $fn_name(&self) -> crate::Result<$response> {
+            Ok(unavailable($msg))
+        }
+    };
+    // Typed request payload (kept for signature parity with mobile.rs).
+    ($fn_name:ident, $request:ty, $response:ty, $msg:expr) => {
+        pub fn $fn_name(&self, _payload: $request) -> crate::Result<$response> {
+            Ok(unavailable($msg))
+        }
+    };
+}
+
+const PLAYBACK_ONLY: &str = "Android playback only available on mobile";
 
 impl<R: Runtime> MusicNotification<R> {
     pub fn ping(&self, payload: PingRequest) -> crate::Result<PingResponse> {
@@ -28,43 +53,57 @@ impl<R: Runtime> MusicNotification<R> {
         })
     }
 
-    pub fn play(&self, _payload: PlayRequest) -> crate::Result<PlayResponse> {
-        Ok(PlayResponse {
-            success: false,
-            message: Some("Desktop implementation not available".to_string()),
-        })
+    stub!(play, PlayRequest, PlayResponse, PLAYBACK_ONLY);
+    stub!(pause, EmptyResponse, PLAYBACK_ONLY);
+    stub!(pause_after, PauseAfterRequest, EmptyResponse, PLAYBACK_ONLY);
+    stub!(resume, EmptyResponse, PLAYBACK_ONLY);
+    stub!(stop, EmptyResponse, PLAYBACK_ONLY);
+    stub!(next, EmptyResponse, PLAYBACK_ONLY);
+    stub!(previous, EmptyResponse, PLAYBACK_ONLY);
+    stub!(
+        play_track_at_index,
+        PlayTrackAtIndexRequest,
+        EmptyResponse,
+        PLAYBACK_ONLY
+    );
+    stub!(
+        set_playing_queue,
+        SetPlayingQueueRequest,
+        QueueMutationResponse,
+        PLAYBACK_ONLY
+    );
+    stub!(clear_playing_queue, QueueMutationResponse, PLAYBACK_ONLY);
+    stub!(
+        set_play_mode,
+        SetPlayModeRequest,
+        QueueMutationResponse,
+        PLAYBACK_ONLY
+    );
+    stub!(start_service, EmptyResponse, PLAYBACK_ONLY);
+    stub!(stop_service, EmptyResponse, PLAYBACK_ONLY);
+    stub!(
+        set_volume,
+        SetVolumeRequest,
+        SetVolumeResponse,
+        "Volume control only available on mobile"
+    );
+    stub!(
+        set_normalization_config,
+        SetNormalizationConfigRequest,
+        SetNormalizationConfigResponse,
+        "Normalization config only available on mobile"
+    );
+
+    pub fn set_server(&self, _library_name: String) -> crate::Result<SetServerResponse> {
+        Ok(unavailable("Server registration only available on mobile"))
     }
 
-    pub fn pause(&self) -> crate::Result<EmptyResponse> {
-        Ok(EmptyResponse { success: false })
-    }
-
-    pub fn pause_after(&self, _payload: PauseAfterRequest) -> crate::Result<EmptyResponse> {
-        Ok(EmptyResponse { success: false })
-    }
-
-    pub fn resume(&self) -> crate::Result<EmptyResponse> {
-        Ok(EmptyResponse { success: false })
-    }
-
-    pub fn stop(&self) -> crate::Result<EmptyResponse> {
-        Ok(EmptyResponse { success: false })
-    }
-
-    pub fn next(&self) -> crate::Result<EmptyResponse> {
-        Ok(EmptyResponse { success: false })
-    }
-
-    pub fn previous(&self) -> crate::Result<EmptyResponse> {
-        Ok(EmptyResponse { success: false })
-    }
-
-    pub fn seek(&self, _position: i64) -> crate::Result<EmptyResponse> {
-        Ok(EmptyResponse { success: false })
+    pub fn seek(&self, _position: i64, _auto_play: bool) -> crate::Result<EmptyResponse> {
+        Ok(unavailable(PLAYBACK_ONLY))
     }
 
     pub fn seek_and_play(&self, _position: i64) -> crate::Result<EmptyResponse> {
-        Ok(EmptyResponse { success: false })
+        Ok(unavailable(PLAYBACK_ONLY))
     }
 
     pub fn get_state(&self) -> crate::Result<PlaybackState> {
@@ -72,16 +111,6 @@ impl<R: Runtime> MusicNotification<R> {
             is_playing: false,
             position: 0,
             duration: 0,
-        })
-    }
-
-    pub fn set_playing_queue(
-        &self,
-        _payload: SetPlayingQueueRequest,
-    ) -> crate::Result<QueueMutationResponse> {
-        Ok(QueueMutationResponse {
-            success: false,
-            message: Some("Android playback queue only available on mobile".to_string()),
         })
     }
 
@@ -95,58 +124,10 @@ impl<R: Runtime> MusicNotification<R> {
                 is_playing: false,
                 position_ms: 0,
                 duration_ms: 0,
+                status: Some("idle".to_string()),
             },
             play_mode: PlayMode::Sequential,
             current_song_id: None,
-        })
-    }
-
-    pub fn clear_playing_queue(&self) -> crate::Result<QueueMutationResponse> {
-        Ok(QueueMutationResponse {
-            success: false,
-            message: Some("Android playback queue only available on mobile".to_string()),
-        })
-    }
-
-    pub fn set_play_mode(
-        &self,
-        _payload: SetPlayModeRequest,
-    ) -> crate::Result<QueueMutationResponse> {
-        Ok(QueueMutationResponse {
-            success: false,
-            message: Some("Android playback queue only available on mobile".to_string()),
-        })
-    }
-
-    pub fn start_service(&self) -> crate::Result<EmptyResponse> {
-        Ok(EmptyResponse { success: false })
-    }
-
-    pub fn stop_service(&self) -> crate::Result<EmptyResponse> {
-        Ok(EmptyResponse { success: false })
-    }
-
-    pub fn set_volume(&self, _payload: SetVolumeRequest) -> crate::Result<SetVolumeResponse> {
-        Ok(SetVolumeResponse {
-            success: false,
-            message: Some("Volume control only available on mobile".to_string()),
-        })
-    }
-
-    pub fn set_normalization_config(
-        &self,
-        _payload: SetNormalizationConfigRequest,
-    ) -> crate::Result<SetNormalizationConfigResponse> {
-        Ok(SetNormalizationConfigResponse {
-            success: false,
-            message: Some("Normalization config only available on mobile".to_string()),
-        })
-    }
-
-    pub fn set_server(&self, _library_name: String) -> crate::Result<SetServerResponse> {
-        Ok(SetServerResponse {
-            success: false,
-            message: Some("Server registration only available on mobile".to_string()),
         })
     }
 
