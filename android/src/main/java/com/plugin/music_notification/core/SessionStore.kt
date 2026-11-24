@@ -96,6 +96,17 @@ object JsonSessionCodec {
         return json
     }
 
+    /**
+     * Android's org.json returns the literal string "null" from optString
+     * for a JSON null, so nullable fields must be checked with isNull first.
+     */
+    private fun optNullableString(json: JSONObject, key: String): String? {
+        if (json.isNull(key)) {
+            return null
+        }
+        return json.optString(key, "").ifBlank { null }
+    }
+
     fun jsonToSession(json: JSONObject): SessionSnapshot {
         val queueJson = json.optJSONObject("queue") ?: JSONObject()
         val songsJson = queueJson.optJSONArray("songs") ?: JSONArray()
@@ -105,12 +116,12 @@ object JsonSessionCodec {
             val song = QueueSongInfo(
                 id = songJson.optLong("id", -1L),
                 name = songJson.optString("name", ""),
-                deviceId = songJson.optString("deviceId", "").ifBlank { null },
+                deviceId = optNullableString(songJson, "deviceId"),
                 sourceKind = songJson.optString("sourceKind", ""),
-                localUri = songJson.optString("localUri", "").ifBlank { null },
-                tempSongUrl = songJson.optString("tempSongUrl", "").ifBlank { null },
+                localUri = optNullableString(songJson, "localUri"),
+                tempSongUrl = optNullableString(songJson, "tempSongUrl"),
                 lufs = if (songJson.has("lufs") && !songJson.isNull("lufs")) songJson.optDouble("lufs") else null,
-                coverUrl = songJson.optString("coverUrl", "").ifBlank { null }
+                coverUrl = optNullableString(songJson, "coverUrl")
             )
             if (song.hasValidLocator()) {
                 songs.add(song)

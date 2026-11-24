@@ -15,10 +15,13 @@ import java.util.concurrent.Executor
  * - The core owns what [android.media.MediaPlayer] cannot know: the queue,
  *   the selection, the play mode, and one in-flight playback request
  *   covering the resolve/prepare window.
- * - A single [epoch] counter invalidates every asynchronous completion
- *   (target resolution, engine callbacks, LUFS results); stale completions
- *   are dropped, which is what keeps a second engine from ever starting
- *   while the first is still audible.
+ * - The [epoch] counter invalidates in-flight target resolutions. Engine
+ *   callbacks are validated by engine identity instead (see
+ *   [beginPlayback]): a prepared engine outlives the request that created
+ *   it, so pausing or re-requesting the same track must not orphan its
+ *   completion/error callbacks. Stale completions of either kind are
+ *   dropped, which is what keeps a second engine from ever starting while
+ *   the first is still audible.
  *
  * All methods must be called on the thread that owns the core (the Android
  * main thread in production); async work is marshalled back through
@@ -31,6 +34,12 @@ class PlayerCore(
     private val store: SessionStore,
     private val poster: Poster,
     private val background: Executor,
+    /**
+     * Runs LUFS precache polling. Polls sleep between attempts, so in
+     * production this must not be the executor that resolves playback
+     * targets or a skip would queue behind them.
+     */
+    private val lufsBackground: Executor = background,
     private val delayer: (Long) -> Unit = { Thread.sleep(it) }
 ) {
 
@@ -76,7 +85,7 @@ class PlayerCore(
     /** In-flight request covering the resolve/prepare window, or null. */
     private var request: PlaybackRequest? = null
 
-    /** Invalidates all in-flight async work; see class docs. */
+    /** Invalidates in-flight target resolutions; see class docs. */
     private var epoch: Long = 0L
 
     private val lufsRequestsInFlight = Collections.synchronizedSet(mutableSetOf<Long>())
@@ -86,7 +95,10 @@ class PlayerCore(
         val index: Int,
         var playWhenReady: Boolean,
         var seekToMs: Long?
-    )
+    ) {
+        /** Engine preparing for this request; null while still resolving. */
+        var engine: PlaybackEngine? = null
+    }
 
     // --- derived views ------------------------------------------------------
 
@@ -213,13 +225,26 @@ class PlayerCore(
     }
 
     /**
-     * Pause also cancels any in-flight resolve/prepare: the epoch bump makes
-     * the eventual onPrepared a no-op, so a track that finishes loading
-     * after a pause stays prepared-and-paused instead of starting.
+     * Pause during the loading window never lets the track start:
+     * - while the target is still resolving, the request is cancelled (the
+     *   epoch bump drops the eventual resolution);
+     * - while the engine is preparing, the request is kept with
+     *   playWhenReady cleared, so onPrepared still applies the pending seek,
+     *   volume and metadata and leaves the track prepared-and-paused.
+     *
+     * Pausing a prepared engine must not touch [epoch] or the engine's
+     * callbacks: its completion still has to advance the queue after resume.
      */
     fun pause(): CommandResult {
-        epoch += 1
-        request = null
+        val activeRequest = request
+        if (activeRequest != null) {
+            if (activeRequest.engine != null && activeRequest.engine === engine) {
+                activeRequest.playWhenReady = false
+            } else {
+                epoch += 1
+                request = null
+            }
+        }
         engine?.let {
             if (it.isPlaying) {
                 it.pause()
@@ -262,9 +287,7 @@ class PlayerCore(
         val activeRequest = request
         if (activeEngine != null) {
             if (activeEngine.isPrepared) {
-                val clampedPosition = normalizedPosition
-                    .coerceAtMost(activeEngine.durationMs.toLong()).toInt()
-                activeEngine.seekTo(clampedPosition)
+                activeEngine.seekTo(clampToDuration(normalizedPosition, activeEngine))
                 if (autoPlay && !activeEngine.isPlaying) {
                     resume()
                 } else {
@@ -273,6 +296,9 @@ class PlayerCore(
             } else {
                 // Still preparing: park the target so onPrepared applies it.
                 activeRequest?.seekToMs = normalizedPosition
+                if (autoPlay) {
+                    activeRequest?.playWhenReady = true
+                }
             }
             return CommandResult(success = true)
         }
@@ -431,10 +457,7 @@ class PlayerCore(
             // Same source already prepared: seek + honor playWhenReady.
             applyTrackVolume()
             playbackRequest.seekToMs?.let { pendingPosition ->
-                val clampedPosition = pendingPosition
-                    .coerceAtMost(activeEngine.durationMs.toLong().takeIf { it > 0L } ?: pendingPosition)
-                    .toInt()
-                activeEngine.seekTo(clampedPosition)
+                activeEngine.seekTo(clampToDuration(pendingPosition, activeEngine))
                 playbackRequest.seekToMs = null
             }
             request = null
@@ -457,21 +480,27 @@ class PlayerCore(
         releaseEngine()
         val newEngine = engineFactory()
         engine = newEngine
-        val engineEpoch = playbackRequest.epoch
+        playbackRequest.engine = newEngine
+        val requestEpoch = playbackRequest.epoch
+        // Callbacks stay valid for as long as this engine is the live one and
+        // no newer request has superseded it. They are deliberately not tied
+        // to [epoch]: pause/resume and same-source re-requests keep using
+        // this engine, and its completion must still advance the queue.
         newEngine.prepare(
             target.audioUrl,
             object : EngineCallbacks {
                 override fun onPrepared() {
-                    if (epoch != engineEpoch) {
-                        Log.d(TAG, "Ignoring stale onPrepared for epoch=$engineEpoch current=$epoch")
+                    if (engine !== newEngine || request !== playbackRequest) {
+                        Log.d(TAG, "Ignoring stale onPrepared for epoch=$requestEpoch current=$epoch")
                         return
                     }
                     handleEnginePrepared(playbackRequest, track, target)
                 }
 
                 override fun onError(what: Int, extra: Int) {
-                    if (epoch != engineEpoch) {
-                        Log.d(TAG, "Ignoring stale onError for epoch=$engineEpoch current=$epoch")
+                    val activeRequest = request
+                    if (engine !== newEngine || (activeRequest != null && activeRequest !== playbackRequest)) {
+                        Log.d(TAG, "Ignoring stale onError for epoch=$requestEpoch current=$epoch")
                         return
                     }
                     request = null
@@ -479,8 +508,10 @@ class PlayerCore(
                 }
 
                 override fun onCompletion() {
-                    if (epoch != engineEpoch) {
-                        Log.d(TAG, "Ignoring stale onCompletion for epoch=$engineEpoch current=$epoch")
+                    // A pending request means a newer selection is already
+                    // loading and will replace this engine itself.
+                    if (engine !== newEngine || request != null) {
+                        Log.d(TAG, "Ignoring stale onCompletion for epoch=$requestEpoch current=$epoch")
                         return
                     }
                     next()
@@ -496,9 +527,7 @@ class PlayerCore(
     ) {
         val activeEngine = engine ?: return
         playbackRequest.seekToMs?.let { pendingPosition ->
-            val clampedPosition = pendingPosition
-                .coerceAtMost(activeEngine.durationMs.toLong()).toInt()
-            activeEngine.seekTo(clampedPosition)
+            activeEngine.seekTo(clampToDuration(pendingPosition, activeEngine))
             playbackRequest.seekToMs = null
         }
         applyTrackVolume()
@@ -509,6 +538,16 @@ class PlayerCore(
         notifyChanged("transition")
         listeners.forEach { it.onTrackStarted(track, target) }
         precacheQueueTracks()
+    }
+
+    /**
+     * Clamp a seek target to the track length. Streams that report no
+     * duration (0 or -1) are left unclamped instead of seeking to <= 0.
+     */
+    private fun clampToDuration(positionMs: Long, target: PlaybackEngine): Int {
+        val durationMs = target.durationMs.toLong()
+        val clamped = if (durationMs > 0L) positionMs.coerceAtMost(durationMs) else positionMs
+        return clamped.coerceIn(0L, Int.MAX_VALUE.toLong()).toInt()
     }
 
     private fun releaseEngine() {
@@ -571,7 +610,7 @@ class PlayerCore(
             return
         }
 
-        background.execute {
+        lufsBackground.execute {
             try {
                 for (attempt in 0..LUFS_POLL_MAX_ATTEMPTS) {
                     val result = lufsClient.requestPrecache(track)

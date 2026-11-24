@@ -240,6 +240,115 @@ class PlayerCoreLifecycleTest {
     }
 
     @Test
+    fun pauseThenResume_completionStillAdvancesToNextTrack() {
+        val harness = harnessWithQueue(1L, 2L)
+        harness.core.playIndex(0, playWhenReady = true, startAtMs = null)
+        harness.stepResolve()
+        harness.engines[0].firePrepared()
+
+        harness.core.pause()
+        harness.core.resume()
+        harness.engines[0].fireCompletion()
+        harness.runUntilIdle()
+
+        assertEquals(2, harness.engines.size)
+        assertEquals("https://example.test/audio/2", harness.engines[1].sourceUrl)
+        assertEquals(1, harness.core.currentTrackIndex)
+        harness.assertSingleEngineOwnership("completion after pause/resume")
+    }
+
+    @Test
+    fun loopMode_everyCompletionRestartsTheSameTrack() {
+        val harness = CoreHarness()
+        harness.core.setQueue(listOf(song(1L)), 0, "loop")
+        harness.core.playIndex(0, playWhenReady = true, startAtMs = null)
+        harness.stepResolve()
+        harness.engines[0].firePrepared()
+        assertEquals(1, harness.resolver.resolved.size)
+
+        // Each completion re-requests the same track through the fast path;
+        // the reused engine's callbacks must stay live for the next one.
+        for (round in 2..4) {
+            harness.engines[0].fireCompletion()
+            harness.runUntilIdle()
+            assertEquals("completion #${round - 1} must re-request the track", round, harness.resolver.resolved.size)
+            assertEquals("playing", harness.core.status)
+        }
+        assertEquals(1, harness.engines.size)
+    }
+
+    @Test
+    fun pauseWhilePreparing_keepsPendingSeekVolumeAndTrackStart() {
+        val harness = harnessWithQueue(1L)
+        harness.core.setNormalizationConfig(
+            NormalizationConfig(mode = "manual", manualVolume = 0.25f)
+        )
+        var startedTracks = 0
+        harness.core.addListener(object : PlayerCore.Listener {
+            override fun onPlaybackChanged(reason: String, message: String?) = Unit
+            override fun onTrackStarted(track: QueueSongInfo, target: PlaybackTarget) {
+                startedTracks += 1
+            }
+        })
+
+        harness.core.playIndex(0, playWhenReady = true, startAtMs = 60_000L)
+        harness.stepResolve()
+        harness.core.pause()
+        harness.engines[0].firePrepared()
+
+        val events = harness.engines[0].events
+        assertEquals("paused", harness.core.status)
+        assertFalse(events.contains("start"))
+        assertTrue(events.contains("seekTo:60000"))
+        assertTrue(events.contains("setVolume:0.25"))
+        assertEquals(1, startedTracks)
+
+        harness.core.resume()
+        assertEquals("playing", harness.core.status)
+    }
+
+    @Test
+    fun pauseThenResumeWhilePreparing_startsWhenPrepareCompletes() {
+        val harness = harnessWithQueue(1L)
+
+        harness.core.playIndex(0, playWhenReady = true, startAtMs = null)
+        harness.stepResolve()
+        harness.core.pause()
+        harness.core.resume()
+        harness.engines[0].firePrepared()
+
+        assertEquals("playing", harness.core.status)
+    }
+
+    @Test
+    fun completionWhileNewerRequestLoads_doesNotSkipPastIt() {
+        val harness = harnessWithQueue(1L, 2L, 3L)
+        harness.core.playIndex(0, playWhenReady = true, startAtMs = null)
+        harness.stepResolve()
+        harness.engines[0].firePrepared()
+
+        // Track 2 is requested but still resolving when track 1 ends.
+        harness.core.playIndex(1, playWhenReady = true, startAtMs = null)
+        harness.engines[0].fireCompletion()
+        harness.runUntilIdle()
+
+        assertEquals(1, harness.core.currentTrackIndex)
+        assertEquals("https://example.test/audio/2", harness.engines.last().sourceUrl)
+    }
+
+    @Test
+    fun pendingSeek_notClampedWhenDurationUnknown() {
+        val harness = harnessWithQueue(1L)
+
+        harness.core.playIndex(0, playWhenReady = true, startAtMs = 30_000L)
+        harness.stepResolve()
+        harness.engines[0].reportedDurationMs = -1
+        harness.engines[0].firePrepared()
+
+        assertTrue(harness.engines[0].events.contains("seekTo:30000"))
+    }
+
+    @Test
     fun manualVolume_appliedWhenTrackPrepares() {
         val harness = harnessWithQueue(1L)
         harness.core.setNormalizationConfig(
