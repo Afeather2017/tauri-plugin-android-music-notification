@@ -53,16 +53,31 @@ The only parked values are position/duration remembered across engine
 release or process restore (no player exists to ask), and restores always
 park **paused**.
 
-## Concurrency and the single epoch
+## Concurrency: the epoch and engine identity
 
-All core methods run on the Android main thread. Asynchronous work (target
-resolution, LUFS precache, artwork) runs on a background executor and
-marshals results back through the main-thread `Poster`.
+All core methods run on the Android main thread. Asynchronous work runs on
+background executors and marshals results back through the main-thread
+`Poster`. Target resolution and artwork share one executor; LUFS precache
+polling has its own (`lufsBackground`), because each poll sleeps between
+attempts and would otherwise delay the resolution behind a skip.
 
-A single `epoch` counter invalidates every asynchronous completion: any
-new request, pause or stop bumps it, and completions carrying a stale epoch
-are dropped. This replaces the four historical generation counters and is
-what makes double playback impossible — an engine can only be created at
+Two rules decide whether an asynchronous completion is still wanted:
+
+- **Target resolutions** carry the `epoch` of their request. Any new
+  request or stop bumps it, as does a pause that arrives while the target
+  is still resolving; a resolution with a stale epoch is dropped.
+- **Engine callbacks** are checked against engine identity, not the epoch.
+  `onPrepared` is honoured while its engine is the live one and its request
+  is still the pending one; `onCompletion` while its engine is the live one
+  and no newer request is pending. A prepared engine outlives the request
+  that created it — pause/resume and same-source re-requests (single-track
+  loop) keep using it — so its completion must keep advancing the queue.
+
+Pausing while an engine is still preparing keeps the request and clears
+`playWhenReady`, so the pending seek, volume and track metadata are still
+applied when preparation finishes and the track is left paused.
+
+Double playback stays impossible because an engine can only be created at
 one point in the core, and the previous engine is always released first
 (see `PlayerCoreLifecycleTest.rapidSecondRequest_releasesFirstEngineBeforePreparingSecond`).
 

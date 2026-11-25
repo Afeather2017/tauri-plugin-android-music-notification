@@ -22,6 +22,9 @@ class FakeEngine : PlaybackEngine {
         private set
     var callbacks: EngineCallbacks? = null
 
+    /** Duration reported once prepared; set to -1 to mimic a live stream. */
+    var reportedDurationMs = DURATION_MS
+
     override fun prepare(url: String, callbacks: EngineCallbacks) {
         events += "prepare:$url"
         this.url = url
@@ -62,7 +65,7 @@ class FakeEngine : PlaybackEngine {
     override val isInErrorState: Boolean get() = error
     override val isPlaying: Boolean get() = playing
     override val currentPositionMs: Int get() = position
-    override val durationMs: Int get() = if (prepared) DURATION_MS else 0
+    override val durationMs: Int get() = if (prepared) reportedDurationMs else 0
     override val sourceUrl: String? get() = url
 
     fun firePrepared() {

@@ -152,6 +152,9 @@ class MusicPlayerService : Service() {
     private lateinit var mediaSession: MediaSessionCompat
     private lateinit var core: PlayerCore
     private lateinit var backgroundExecutor: ExecutorService
+    // LUFS polls sleep between attempts; they get their own pool so they can
+    // never starve target resolution (a skip) or artwork loading.
+    private lateinit var lufsExecutor: ExecutorService
     private lateinit var progressRunnable: Runnable
 
     private var httpServerRunning = false
@@ -177,14 +180,19 @@ class MusicPlayerService : Service() {
         super.onCreate()
         instance = this
         handler = Handler(Looper.getMainLooper())
+        // The channel must exist before anything can post a notification
+        // (restore below already fires a playback-changed event).
+        createNotificationChannel()
         backgroundExecutor = Executors.newFixedThreadPool(3)
+        lufsExecutor = Executors.newFixedThreadPool(2)
         core = PlayerCore(
             engineFactory = { MediaPlayerEngine(this) },
             resolver = HttpPlaybackTargetResolver(),
             lufsClient = HttpLufsClient(HttpPlaybackTargetResolver()),
             store = PrefsSessionStore(this),
             poster = HandlerPoster(handler),
-            background = backgroundExecutor
+            background = backgroundExecutor,
+            lufsBackground = lufsExecutor
         )
         normalizationConfig = NormalizationConfigCodec.load(this)
         core.setNormalizationConfig(normalizationConfig)
@@ -290,6 +298,11 @@ class MusicPlayerService : Service() {
         if (loadedLib == null) {
             Log.e(TAG, "No server library could be loaded, JNI call will likely fail")
         }
+        startEmbeddedServer()
+        ready = true
+    }
+
+    private fun startEmbeddedServer() {
         val result = try {
             serverStart()
         } catch (e: UnsatisfiedLinkError) {
@@ -303,7 +316,6 @@ class MusicPlayerService : Service() {
         if (!httpServerRunning) {
             Log.e(TAG, "Embedded server not running (code: $result)")
         }
-        ready = true
     }
 
     var normalizationConfig = NormalizationConfig()
@@ -424,7 +436,15 @@ class MusicPlayerService : Service() {
 
         intent?.let {
             when (it.action) {
-                ACTION_START_SERVICE -> Log.d(TAG, "Action: START_SERVICE")
+                ACTION_START_SERVICE -> {
+                    Log.d(TAG, "Action: START_SERVICE")
+                    // The binder keeps this instance alive across
+                    // stopService(), so onCreate will not run again to
+                    // bring the server back.
+                    if (!httpServerRunning) {
+                        startEmbeddedServer()
+                    }
+                }
                 ACTION_STOP_SERVICE -> {
                     Log.d(TAG, "Action: STOP_SERVICE")
                     val result = try {
@@ -433,10 +453,12 @@ class MusicPlayerService : Service() {
                         Log.e(TAG, "serverStop() JNI symbol missing", e)
                         -1
                     }
-                    httpServerRunning = result == 0
-                    if (!httpServerRunning) {
+                    if (result != 0) {
                         Log.e(TAG, "Failed to stop server, code: $result")
                     }
+                    // Stop was requested: the server no longer keeps the
+                    // service alive, whatever serverStop() reported.
+                    httpServerRunning = false
                     updateServiceLifetime()
                 }
                 ACTION_PLAY -> {
@@ -818,6 +840,11 @@ class MusicPlayerService : Service() {
     }
 
     private fun updateNotification() {
+        // Only a foreground service owns the notification; posting earlier
+        // (e.g. on restore right after bind) would show a stray one.
+        if (!foregroundActive) {
+            return
+        }
         val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         notificationManager.notify(NOTIFICATION_ID, createNotification())
     }
@@ -857,6 +884,7 @@ class MusicPlayerService : Service() {
         mediaSession.release()
         core.shutdown()
         backgroundExecutor.shutdown()
+        lufsExecutor.shutdownNow()
         Log.d(TAG, "onDestroy complete")
     }
 

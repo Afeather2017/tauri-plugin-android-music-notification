@@ -37,7 +37,7 @@ In this plugin, Rust HTTP server code runs in the foreground service to persist 
 ```
 examples/music.notification/src-tauri/src/lib.rs  ← Rust HTTP server + JNI exports
 android/src/main/java/MusicPlayerService.kt       ← Service that calls JNI
-android/src/main/java/ExamplePlugin.kt            ← Tauri plugin commands
+android/src/main/java/MusicNotificationPlugin.kt            ← Tauri plugin commands
 ```
 
 ---
@@ -159,7 +159,7 @@ class MusicPlayerService : Service() {
 
 ### Step 4: Start Service from Plugin Command
 
-In `android/src/main/java/ExamplePlugin.kt`:
+In `android/src/main/java/MusicNotificationPlugin.kt`:
 
 ```kotlin
 @Command
@@ -342,7 +342,7 @@ implementation("com.github.tauri-apps.tauri:tauri-android:2.x")
 | `run_http_server()` | `src-tauri/src/lib.rs` | Actual server implementation |
 | `Java_..._startHttpServer()` | `src-tauri/src/lib.rs` | JNI bridge function |
 | `MusicPlayerService` | `android/src/main/java/` | Foreground service that calls JNI |
-| `ExamplePlugin.play()` | `android/src/main/java/` | Tauri command to start service |
+| `MusicNotificationPlugin.play()` | `android/src/main/java/` | Tauri command to start service |
 
 **Key Takeaway**: Use JNI when you need Rust code to run inside Android native services (foreground services, broadcast receivers, etc.). The native library must be loaded before calling any JNI functions.
 
