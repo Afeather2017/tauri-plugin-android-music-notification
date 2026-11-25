@@ -27,7 +27,7 @@ import com.plugin.music_notification.core.CommandResult
 import com.plugin.music_notification.core.HandlerPoster
 import com.plugin.music_notification.core.HttpLufsClient
 import com.plugin.music_notification.core.HttpPlaybackTargetResolver
-import com.plugin.music_notification.core.MediaPlayerEngine
+import com.plugin.music_notification.core.Media3PlaybackEngine
 import com.plugin.music_notification.core.NormalizationConfig
 import com.plugin.music_notification.core.NormalizationConfigCodec
 import com.plugin.music_notification.core.PauseAfterMath
@@ -186,7 +186,7 @@ class MusicPlayerService : Service() {
         backgroundExecutor = Executors.newFixedThreadPool(3)
         lufsExecutor = Executors.newFixedThreadPool(2)
         core = PlayerCore(
-            engineFactory = { MediaPlayerEngine(this) },
+            engineFactory = { Media3PlaybackEngine(this) },
             resolver = HttpPlaybackTargetResolver(),
             lufsClient = HttpLufsClient(HttpPlaybackTargetResolver()),
             store = PrefsSessionStore(this),

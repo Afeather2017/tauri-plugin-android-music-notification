@@ -4,6 +4,11 @@ fn default_lufs_precache_count() -> u32 {
     5
 }
 
+/// Neutral per-channel gain; keeps older payloads (without channel fields) working.
+fn default_channel_volume() -> f32 {
+    1.0
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PingRequest {
@@ -219,6 +224,11 @@ pub struct SetNormalizationConfigRequest {
     pub fixed_lufs: f64,
     #[serde(default = "default_lufs_precache_count")]
     pub lufs_precache_count: u32,
+    /// Per-channel gains in [0, 1] applied on top of the normalized volume.
+    #[serde(default = "default_channel_volume")]
+    pub left_channel_volume: f32,
+    #[serde(default = "default_channel_volume")]
+    pub right_channel_volume: f32,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]

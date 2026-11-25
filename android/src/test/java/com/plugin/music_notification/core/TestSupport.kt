@@ -14,7 +14,9 @@ class FakeEngine : PlaybackEngine {
         private set
     var position = 0
         private set
-    var volume = 1f
+    var leftVolume = 1f
+        private set
+    var rightVolume = 1f
         private set
     var url: String? = null
         private set
@@ -49,9 +51,10 @@ class FakeEngine : PlaybackEngine {
         position = positionMs
     }
 
-    override fun setVolume(volume: Float) {
-        events += "setVolume:$volume"
-        this.volume = volume
+    override fun setVolume(leftVolume: Float, rightVolume: Float) {
+        events += "setVolume:$leftVolume:$rightVolume"
+        this.leftVolume = leftVolume
+        this.rightVolume = rightVolume
     }
 
     override fun release() {

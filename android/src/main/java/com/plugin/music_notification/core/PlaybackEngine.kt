@@ -2,9 +2,8 @@ package com.plugin.music_notification.core
 
 /**
  * Transport adapter over the platform player. The core owns at most one
- * engine at a time; engine lifecycle questions (prepared-ness, error state)
- * that [android.media.MediaPlayer] tracks internally but does not expose
- * via queries live here, updated only by the player's own callbacks.
+ * engine at a time. The adapter tracks preparation and errors through
+ * callbacks from its player.
  */
 interface PlaybackEngine {
     /** Asynchronously prepare [url]. Must not be called twice without an intervening [release]. */
@@ -16,8 +15,8 @@ interface PlaybackEngine {
 
     fun seekTo(positionMs: Int)
 
-    /** Applies a stereo pair volume in [0, 1]. */
-    fun setVolume(volume: Float)
+    /** Applies an independent left/right volume pair in [0, 1], including before preparation. */
+    fun setVolume(leftVolume: Float, rightVolume: Float)
 
     fun release()
 

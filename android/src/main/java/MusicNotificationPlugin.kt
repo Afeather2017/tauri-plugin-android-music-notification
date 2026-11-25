@@ -67,6 +67,8 @@ class SetNormalizationConfigArgs {
   var manualVolume: Float = 0.5f
   var fixedLufs: Double = -27.0
   var lufsPrecacheCount: Int = 5
+  var leftChannelVolume: Float = 1.0f
+  var rightChannelVolume: Float = 1.0f
 }
 
 @InvokeArg
@@ -566,7 +568,9 @@ class MusicNotificationPlugin(private val activity: Activity): Plugin(activity) 
             mode = com.plugin.music_notification.core.normalizeNormalizationMode(args.mode),
             manualVolume = args.manualVolume,
             fixedLufs = args.fixedLufs,
-            lufsPrecacheCount = args.lufsPrecacheCount
+            lufsPrecacheCount = args.lufsPrecacheCount,
+            leftChannelVolume = args.leftChannelVolume,
+            rightChannelVolume = args.rightChannelVolume
         )
         exec(
             unavailable = { null },

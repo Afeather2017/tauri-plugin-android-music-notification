@@ -300,7 +300,7 @@ class PlayerCoreLifecycleTest {
         assertEquals("paused", harness.core.status)
         assertFalse(events.contains("start"))
         assertTrue(events.contains("seekTo:60000"))
-        assertTrue(events.contains("setVolume:0.25"))
+        assertTrue(events.contains("setVolume:0.25:0.25"))
         assertEquals(1, startedTracks)
 
         harness.core.resume()
@@ -358,7 +358,55 @@ class PlayerCoreLifecycleTest {
         harness.stepResolve()
         harness.engines[0].firePrepared()
 
-        assertTrue(harness.engines[0].events.contains("setVolume:0.25"))
+        assertTrue(harness.engines[0].events.contains("setVolume:0.25:0.25"))
+    }
+
+    @Test
+    fun channelBalance_scalesNormalizedVolumeAndUpdatesDuringPlayback() {
+        val harness = CoreHarness()
+        harness.core.setQueue(listOf(song(1L, lufs = -20.0)), 0, "sequential")
+        val config = NormalizationConfig(
+            mode = "fixed",
+            fixedLufs = -40.0,
+            leftChannelVolume = 0.0f,
+            rightChannelVolume = 0.5f
+        )
+        harness.core.setNormalizationConfig(config)
+        harness.core.playIndex(0, playWhenReady = true, startAtMs = null)
+        harness.stepResolve()
+        harness.engines[0].firePrepared()
+
+        val engine = harness.engines[0]
+        assertEquals(0.0f, engine.leftVolume, 0.0001f)
+        assertEquals(0.05f, engine.rightVolume, 0.0001f)
+
+        harness.core.setNormalizationConfig(
+            config.copy(leftChannelVolume = 1.0f, rightChannelVolume = 0.0f)
+        )
+        assertEquals(0.1f, engine.leftVolume, 0.0001f)
+        assertEquals(0.0f, engine.rightVolume, 0.0001f)
+    }
+
+    @Test
+    fun setRawVolume_appliesChannelBalance() {
+        val harness = harnessWithQueue(1L)
+        harness.core.playIndex(0, playWhenReady = true, startAtMs = null)
+        harness.stepResolve()
+        harness.engines[0].firePrepared()
+
+        harness.core.setRawVolume(0.8f)
+        assertTrue(harness.engines[0].events.contains("setVolume:0.8:0.8"))
+
+        harness.core.setNormalizationConfig(
+            NormalizationConfig(
+                mode = "manual",
+                manualVolume = 0.5f,
+                leftChannelVolume = 0.5f,
+                rightChannelVolume = 1.0f
+            )
+        )
+        harness.core.setRawVolume(0.8f)
+        assertTrue(harness.engines[0].events.contains("setVolume:0.4:0.8"))
     }
 
     @Test

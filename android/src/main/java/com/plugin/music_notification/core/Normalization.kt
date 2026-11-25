@@ -12,14 +12,22 @@ data class NormalizationConfig(
     val mode: String = "auto",
     val manualVolume: Float = 0.5f,
     val fixedLufs: Double = -27.0,
-    val lufsPrecacheCount: Int = DEFAULT_LUFS_PRECACHE_COUNT
+    val lufsPrecacheCount: Int = DEFAULT_LUFS_PRECACHE_COUNT,
+    val leftChannelVolume: Float = DEFAULT_CHANNEL_VOLUME,
+    val rightChannelVolume: Float = DEFAULT_CHANNEL_VOLUME
 ) {
     companion object {
         const val DEFAULT_LUFS_PRECACHE_COUNT = 5
         const val MIN_LUFS_PRECACHE_COUNT = 0
         const val MAX_LUFS_PRECACHE_COUNT = 20
         const val DEFAULT_MIN_LUFS = -29.0
+        const val DEFAULT_CHANNEL_VOLUME = 1.0f
     }
+}
+
+/** Clamp a per-channel gain into [0, 1]; [NormalizationConfig.DEFAULT_CHANNEL_VOLUME] is neutral. */
+fun normalizeChannelVolume(volume: Float): Float {
+    return if (volume.isFinite()) volume.coerceIn(0.0f, 1.0f) else NormalizationConfig.DEFAULT_CHANNEL_VOLUME
 }
 
 fun normalizeLufsPrecacheCount(count: Int): Int {
@@ -100,6 +108,12 @@ object NormalizationConfigCodec {
                 fixedLufs = json.optDouble("fixedLufs", -27.0),
                 lufsPrecacheCount = normalizeLufsPrecacheCount(
                     json.optInt("lufsPrecacheCount", NormalizationConfig.DEFAULT_LUFS_PRECACHE_COUNT)
+                ),
+                leftChannelVolume = normalizeChannelVolume(
+                    json.optDouble("leftChannelVolume", NormalizationConfig.DEFAULT_CHANNEL_VOLUME.toDouble()).toFloat()
+                ),
+                rightChannelVolume = normalizeChannelVolume(
+                    json.optDouble("rightChannelVolume", NormalizationConfig.DEFAULT_CHANNEL_VOLUME.toDouble()).toFloat()
                 )
             )
         } catch (e: Exception) {
@@ -114,6 +128,8 @@ object NormalizationConfigCodec {
         json.put("manualVolume", config.manualVolume.toDouble())
         json.put("fixedLufs", config.fixedLufs)
         json.put("lufsPrecacheCount", normalizeLufsPrecacheCount(config.lufsPrecacheCount))
+        json.put("leftChannelVolume", normalizeChannelVolume(config.leftChannelVolume).toDouble())
+        json.put("rightChannelVolume", normalizeChannelVolume(config.rightChannelVolume).toDouble())
         prefs.edit()
             .putString(PREF_NORMALIZATION, json.toString())
             .apply()

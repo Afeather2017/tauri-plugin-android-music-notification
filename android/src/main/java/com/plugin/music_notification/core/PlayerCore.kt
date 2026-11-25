@@ -332,7 +332,7 @@ class PlayerCore(
     }
 
     fun setRawVolume(volume: Float): CommandResult {
-        engine?.setVolume(volume)
+        applyEngineVolume(volume)
         return CommandResult(success = true)
     }
 
@@ -481,6 +481,7 @@ class PlayerCore(
         val newEngine = engineFactory()
         engine = newEngine
         playbackRequest.engine = newEngine
+        applyTrackVolume()
         val requestEpoch = playbackRequest.epoch
         // Callbacks stay valid for as long as this engine is the live one and
         // no newer request has superseded it. They are deliberately not tied
@@ -557,7 +558,19 @@ class PlayerCore(
 
     private fun applyTrackVolume() {
         val track = currentTrackOrNull() ?: return
-        engine?.setVolume(calculateTrackVolume(normalizationConfig, tracks, track))
+        applyEngineVolume(calculateTrackVolume(normalizationConfig, tracks, track))
+    }
+
+    /**
+     * Scales the base volume by the configured per-channel gains and pushes
+     * the stereo pair to the engine for application to decoded audio.
+     */
+    private fun applyEngineVolume(baseVolume: Float) {
+        val left = (baseVolume * normalizeChannelVolume(normalizationConfig.leftChannelVolume))
+            .coerceIn(0.0f, 1.0f)
+        val right = (baseVolume * normalizeChannelVolume(normalizationConfig.rightChannelVolume))
+            .coerceIn(0.0f, 1.0f)
+        engine?.setVolume(left, right)
     }
 
     // --- LUFS precache --------------------------------------------------------

@@ -362,7 +362,7 @@ interface PlaybackState {
 Sets the playback volume for the current music player.
 
 **Parameters:**
-- `volume` (number): Volume level from 0.0 (silent) to 1.0 (full volume)
+- `volume` (number): Volume level from 0.0 (silent) to 1.0 (full volume). The value is used as the base volume and is still scaled by the configured per-channel gains (see `setNormalizationConfig`).
 
 **Returns:** `Promise<{ success: boolean; message?: string }>`
 
@@ -377,6 +377,10 @@ Updates the mobile normalization mode and LUFS queue pre-cache behavior.
 - `manualVolume` (number): Manual fallback volume from `0.0` to `1.0`
 - `fixedLufs` (number): Target LUFS used when `mode` is `"fixed"`
 - `lufsPrecacheCount` (number, optional): Number of missing-LUFS queue items to pre-cache from the current track onward. Clamped to `0..20`, default `5`.
+- `leftChannelVolume` (number, optional): Left-channel gain from `0.0` to `1.0` applied on top of the normalized volume. Default `1.0`.
+- `rightChannelVolume` (number, optional): Right-channel gain from `0.0` to `1.0` applied on top of the normalized volume. Default `1.0`.
+
+The final per-channel volume is `clamp(baseVolume * channelVolume, 0, 1)`, where `baseVolume` comes from the active normalization mode. The player applies the gains to decoded PCM before sending it to Android's audio output. The config is persisted and restored across service restarts.
 
 **Returns:** `Promise<{ success: boolean; message?: string }>`
 

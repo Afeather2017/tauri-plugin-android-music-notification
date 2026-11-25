@@ -43,6 +43,7 @@ dependencies {
     implementation("androidx.appcompat:appcompat:1.6.0")
     implementation("com.google.android.material:material:1.7.0")
     implementation("androidx.media:media:1.6.0")
+    implementation("androidx.media3:media3-exoplayer:1.6.1")
     testImplementation("junit:junit:4.13.2")
     // Real org.json on the JVM test classpath (the android.jar stubs throw).
     testImplementation("org.json:json:20240303")

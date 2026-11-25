@@ -223,6 +223,9 @@ export interface SetNormalizationConfigOptions {
   manualVolume: number;
   fixedLufs: number;
   lufsPrecacheCount?: number;
+  /** Per-channel gains in [0, 1] applied on top of the normalized volume (default 1). */
+  leftChannelVolume?: number;
+  rightChannelVolume?: number;
 }
 
 export async function setNormalizationConfig(

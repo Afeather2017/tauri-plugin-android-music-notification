@@ -19,7 +19,7 @@ Rust commands.rs / mobile.rs  ── forward ──►  MusicNotificationPlugin 
                               queue · selection · play mode · in-flight request
                                                   │ single engine ownership
                                                   ▼
-                                         PlaybackEngine (MediaPlayerEngine)
+                                         PlaybackEngine (Media3PlaybackEngine)
 ```
 
 `MusicPlayerService` and `MusicNotificationPlugin` present state; `PlayerCore`
@@ -36,10 +36,10 @@ mirror it.**
    are read from the engine whenever a snapshot is taken. The historical
    `musicPlayerActive` / `cachedRuntime` mirrors and their drift bugs are
    gone by construction.
-2. **Engine-internal bookkeeping lives in the engine adapter.** MediaPlayer
-   has no `isPrepared` query, so `MediaPlayerEngine` tracks prepared/error
-   flags — updated only by MediaPlayer's own callbacks.
-3. **The core owns only what MediaPlayer cannot know**: the queue, the
+2. **Engine-internal bookkeeping lives in the engine adapter.**
+   `Media3PlaybackEngine` tracks preparation and errors through player callbacks.
+   Its audio processor applies channel gains to decoded PCM before output.
+3. **The core owns Kaulan's playback state**: the queue, the
    selection, the play mode, and one in-flight request
    (`{epoch, index, playWhenReady, seekToMs}`) covering the resolve/prepare
    window where no player is loaded yet. `playWhenReady` is passed
