@@ -1,4 +1,4 @@
-use tauri_plugin_android_music_notification::{Server, set_server};
+use tauri_plugin_music_notification_api::{Server, set_server};
 use std::ffi::CString;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};
@@ -255,7 +255,7 @@ pub fn run() {
 
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![greet])
-        .plugin(tauri_plugin_android_music_notification::init())
+        .plugin(tauri_plugin_music_notification_api::init())
         .setup(|app| {
             Ok(())
         })

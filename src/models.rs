@@ -76,78 +76,12 @@ pub enum NormalizationMode {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct QueueSong {
-    /// Database identity for Kaulan tracks, or the caller-provided temporary id.
     pub id: i64,
     pub name: String,
-    /// Stable device identity used to resolve Kaulan playback immediately before play.
-    pub device_id: Option<String>,
-    /// One of `kaulan`, `local_raw`, or `temporary`.
-    pub source_kind: String,
-    /// Direct filesystem or content URI used only by `local_raw` entries.
-    #[serde(default)]
-    pub local_uri: Option<String>,
-    /// Ephemeral playback URL used only by `temporary` entries.
-    #[serde(default)]
-    pub temp_song_url: Option<String>,
+    pub path: String,
+    pub url: String,
     pub lufs: Option<f64>,
     pub cover_url: Option<String>,
-}
-
-#[cfg(test)]
-mod queue_song_tests {
-    use super::QueueSong;
-
-    #[test]
-    fn serializes_source_specific_queue_fields_as_camel_case() {
-        let song = QueueSong {
-            id: 42,
-            name: "Remote track".to_string(),
-            device_id: Some("device-a".to_string()),
-            source_kind: "kaulan".to_string(),
-            local_uri: None,
-            temp_song_url: None,
-            lufs: Some(-14.0),
-            cover_url: None,
-        };
-
-        let json = serde_json::to_value(song).expect("queue song should serialize");
-        assert_eq!(json["deviceId"], "device-a");
-        assert_eq!(json["sourceKind"], "kaulan");
-        assert!(json.get("path").is_none());
-        assert!(json.get("url").is_none());
-        assert!(json.get("localUri").is_some());
-        assert!(json.get("tempSongUrl").is_some());
-    }
-
-    #[test]
-    fn deserializes_local_and_temporary_locators() {
-        let local: QueueSong = serde_json::from_value(serde_json::json!({
-            "id": 1,
-            "name": "Local",
-            "deviceId": null,
-            "sourceKind": "local_raw",
-            "localUri": "content://media/1",
-            "lufs": null,
-            "coverUrl": null
-        }))
-        .expect("local queue song should deserialize");
-        assert_eq!(local.local_uri.as_deref(), Some("content://media/1"));
-
-        let temporary: QueueSong = serde_json::from_value(serde_json::json!({
-            "id": -1,
-            "name": "Preview",
-            "deviceId": null,
-            "sourceKind": "temporary",
-            "tempSongUrl": "https://example.test/preview.mp3",
-            "lufs": null,
-            "coverUrl": null
-        }))
-        .expect("temporary queue song should deserialize");
-        assert_eq!(
-            temporary.temp_song_url.as_deref(),
-            Some("https://example.test/preview.mp3")
-        );
-    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -163,10 +97,6 @@ pub struct PlaybackRuntime {
     pub is_playing: bool,
     pub position_ms: i64,
     pub duration_ms: i64,
-    /// Native transport status (`idle|loading|playing|paused|error`). Absent
-    /// in payloads from older plugin builds; callers fall back to is_playing.
-    #[serde(default)]
-    pub status: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -245,30 +175,6 @@ pub struct SetServerResponse {
 #[serde(rename_all = "camelCase")]
 pub struct SetHeadsetMediaButtonDisabledRequest {
     pub disabled: bool,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PlayTrackAtIndexRequest {
-    pub index: i32,
-    pub auto_play: bool,
-    pub start_at_ms: Option<i64>,
-}
-
-/// Native playback snapshot pushed from the Kotlin service to JS.
-/// Emitted on every state transition plus a 250 ms position tick while playing.
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PlaybackSnapshotEvent {
-    pub reason: String,
-    pub status: String,
-    pub index: i32,
-    pub song_id: Option<i64>,
-    pub position_ms: i64,
-    pub duration_ms: i64,
-    pub position_at_ms: i64,
-    pub play_mode: String,
-    pub message: Option<String>,
 }
 
 // Server trait for example apps to implement
@@ -363,51 +269,10 @@ pub extern "C" fn Java_com_plugin_music_1notification_MusicPlayerService_serverS
     server_stop()
 }
 
-/// Name of the global Tauri event carrying native playback snapshots to JS.
-pub const PLAYBACK_EVENT_NAME: &str = "playback:event";
-
-type EventEmitFn = Arc<dyn Fn(&str, String) + Send + Sync>;
-
-/// Runtime-erased emitter installed during plugin setup. The Kotlin service
-/// reaches it through the `emitPlaybackEvent` JNI symbol, so playback state
-/// changes flow to JS without any polling.
-static EVENT_EMITTER: Mutex<Option<EventEmitFn>> = Mutex::new(None);
-
-/// Install the app-handle-backed emitter used by the JNI playback event symbol.
-pub fn register_event_emitter<R: tauri::Runtime>(handle: tauri::AppHandle<R>) {
-    let emit_fn: EventEmitFn = Arc::new(move |event: &str, payload: String| {
-        use tauri::Emitter;
-        let _ = handle.emit(event, payload);
-    });
-    *EVENT_EMITTER.lock().unwrap() = Some(emit_fn);
-}
-
-pub fn emit_playback_event(payload: &str) {
-    if let Some(emit_fn) = EVENT_EMITTER.lock().unwrap().as_ref() {
-        emit_fn(PLAYBACK_EVENT_NAME, payload.to_string());
-    }
-}
-
-#[cfg(target_os = "android")]
-#[no_mangle]
-pub extern "C" fn Java_com_plugin_music_1notification_MusicPlayerService_emitPlaybackEvent(
-    mut env: jni::JNIEnv,
-    _this: jni::objects::JObject,
-    payload: jni::objects::JString,
-) -> jni::sys::jboolean {
-    let payload: String = match env.get_string(&payload) {
-        Ok(java_str) => java_str.to_string_lossy().into_owned(),
-        Err(_) => return 0,
-    };
-    emit_playback_event(&payload);
-    1
-}
-
 #[cfg(target_os = "android")]
 pub fn ensure_android_jni_symbols_linked() {
     let _ = Java_com_plugin_music_1notification_MusicPlayerService_serverStart as *const ();
     let _ = Java_com_plugin_music_1notification_MusicPlayerService_serverStop as *const ();
-    let _ = Java_com_plugin_music_1notification_MusicPlayerService_emitPlaybackEvent as *const ();
 }
 
 /// Call stop on the registered server (called from JNI wrapper)
